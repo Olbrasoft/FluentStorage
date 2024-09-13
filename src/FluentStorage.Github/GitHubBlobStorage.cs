@@ -38,8 +38,7 @@ public class GitHubBlobStorage : IBlobStorage
 
         foreach (var fullPath in fullPaths)
         {
-            if (string.IsNullOrEmpty(fullPath))
-                throw new ArgumentException("Full path cannot be null or empty", nameof(fullPath));
+            if (string.IsNullOrEmpty(fullPath)) throw new ArgumentException("Full path cannot be null or empty", nameof(fullPath));
 
             var url = GetGitHubFileUrl(fullPath);
 
@@ -143,10 +142,7 @@ public class GitHubBlobStorage : IBlobStorage
     public async Task<IReadOnlyCollection<Blob>> ListAsync(ListOptions? options = null, CancellationToken cancellationToken = default)
     {
         // If no options are provided, use default ListOptions
-        if (options == null)
-        {
-            options = new ListOptions();
-        }
+        options ??= new ListOptions();
 
         // Initialize a list to hold the resulting blobs
         var blobs = new List<Blob>();
