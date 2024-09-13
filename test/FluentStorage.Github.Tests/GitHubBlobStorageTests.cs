@@ -1,5 +1,6 @@
 ﻿using FluentStorage.Blobs;
 using System.Text;
+using System.Text.Json;
 
 namespace Olbrasoft.FluentStorage.Github.Tests;
 
@@ -73,8 +74,10 @@ public class GitHubBlobStorageTests
         var owner = "Olbrasoft";
         var repo = "FluentStorageTesting";
         var branch = "main";
-        var token = "";
+        var token = LoadSecrets()?.GitHubToken;
         var directory = "Tests";
+
+        token = token ?? throw new Exception("GitHub token is missing");
 
         var storage = new GitHubBlobStorage(owner, repo, branch, token);
 
@@ -92,6 +95,19 @@ public class GitHubBlobStorageTests
 
     }
 
+    private class Secrets
+    {
+        public string? GitHubToken { get; set; }
+    }
+
+    private Secrets? LoadSecrets()
+    {
+        // Cesta k secrets.json relativně k projektu
+        var path = Path.Combine(Directory.GetParent(Directory.GetCurrentDirectory())?.Parent?.Parent?.FullName ?? "", "secrets.json");
+        var json = File.ReadAllText(path);
+        return JsonSerializer.Deserialize<Secrets>(json);
+    }
+
 
     //writeasnc test
     [Fact]
@@ -101,10 +117,11 @@ public class GitHubBlobStorageTests
         var owner = "Olbrasoft";
         var repo = "FluentStorageTesting";
         var branch = "main";
-        var token = "";
+        var token = LoadSecrets()?.GitHubToken;
         var directory = "Tests";
         var helloWorld = "Hello World!";
 
+        token = token ?? throw new Exception("GitHub token is missing");
 
         var storage = new GitHubBlobStorage(owner, repo, branch, token);
 
