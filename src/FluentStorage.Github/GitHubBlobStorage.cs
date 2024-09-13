@@ -38,47 +38,52 @@ public class GitHubBlobStorage : IBlobStorage
 
         foreach (var fullPath in fullPaths)
         {
-            if (string.IsNullOrEmpty(fullPath)) throw new ArgumentException("Full path cannot be null or empty", nameof(fullPath));
-
-            var url = GetGitHubFileUrl(fullPath);
-
-            // Get file info to get SHA
-            var getResponse = await _httpClient.GetAsync(url, cancellationToken);
-            if (!getResponse.IsSuccessStatusCode)
-            {
-                // If file doesn't exist, we simply skip it
-                continue;
-            }
-
-            var getFileContent = await getResponse.Content.ReadAsStringAsync();
-            var fileInfo = JsonConvert.DeserializeObject<GitHubFileResponse>(getFileContent);
-
-            // Prepare delete request
-            var deleteRequestBody = new
-            {
-                message = $"Delete {fullPath}",
-                sha = fileInfo?.Sha,
-                branch = _branch
-            };
-
-            var deleteJsonRequestBody = JsonConvert.SerializeObject(deleteRequestBody);
-            var deleteContent = new StringContent(deleteJsonRequestBody, Encoding.UTF8, "application/json");
-
-            var requestMessage = new HttpRequestMessage(HttpMethod.Delete, url)
-            {
-                Content = deleteContent
-            };
-
-            var deleteResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
-
-            if (!deleteResponse.IsSuccessStatusCode)
-            {
-                var error = await deleteResponse.Content.ReadAsStringAsync();
-                throw new InvalidOperationException($"Error deleting file from GitHub: {deleteResponse.StatusCode}, {error}");
-            }
+            await DeleteAsync(fullPath, cancellationToken);
         }
     }
 
+
+    public async Task DeleteAsync(string fullPath, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(fullPath)) throw new ArgumentException("Full path cannot be null or empty", nameof(fullPath));
+
+        var url = GetGitHubFileUrl(fullPath);
+
+        // Get file info to get SHA
+        var getResponse = await _httpClient.GetAsync(url, cancellationToken);
+        if (!getResponse.IsSuccessStatusCode)
+        {
+            // If file doesn't exist, we simply skip it
+            return;
+        }
+
+        var getFileContent = await getResponse.Content.ReadAsStringAsync();
+        var fileInfo = JsonConvert.DeserializeObject<GitHubFileResponse>(getFileContent);
+
+        // Prepare delete request
+        var deleteRequestBody = new
+        {
+            message = $"Delete {fullPath}",
+            sha = fileInfo?.Sha,
+            branch = _branch
+        };
+
+        var deleteJsonRequestBody = JsonConvert.SerializeObject(deleteRequestBody);
+        var deleteContent = new StringContent(deleteJsonRequestBody, Encoding.UTF8, "application/json");
+
+        var requestMessage = new HttpRequestMessage(HttpMethod.Delete, url)
+        {
+            Content = deleteContent
+        };
+
+        var deleteResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
+
+        if (!deleteResponse.IsSuccessStatusCode)
+        {
+            var error = await deleteResponse.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException($"Error deleting file from GitHub: {deleteResponse.StatusCode}, {error}");
+        }
+    }
 
     public async Task<IReadOnlyCollection<bool>> ExistsAsync(IEnumerable<string> fullPaths, CancellationToken cancellationToken = default)
     {
@@ -177,25 +182,25 @@ public class GitHubBlobStorage : IBlobStorage
 
         // Deserialize the response content into a list of GitHubFileResponse objects
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
-        var items = JsonConvert.DeserializeObject<List<GitHubFileResponse>>(content);
+        var fileResponses = JsonConvert.DeserializeObject<List<GitHubFileResponse>>(content);
 
         // If the response is empty or null, return early
-        if (items == null || !items.Any())
+        if (fileResponses == null || fileResponses.Count == 0)
         {
             return;
         }
 
-        foreach (var item in items)
+        foreach (var fileResponse in fileResponses)
         {
-            // Determine if the item is a directory
-            var isDirectory = string.Equals(item.Type, "dir", StringComparison.OrdinalIgnoreCase);
+            // Determine if the fileResponse is a directory
+            var isDirectory = string.Equals(fileResponse.Type, "dir", StringComparison.OrdinalIgnoreCase);
             var blobItemKind = isDirectory ? BlobItemKind.Folder : BlobItemKind.File;
 
-            // Create a Blob object for the current item
-            var blob = new Blob(item.Path, blobItemKind)
+            // Create a Blob object for the current fileResponse
+            var blob = new Blob(fileResponse.Path, blobItemKind)
             {
-                Size = item.Size ?? 0,
-                MD5 = item.MD5 ?? string.Empty
+                Size = fileResponse.Size ?? 0,
+                MD5 = fileResponse.MD5 ?? string.Empty
             };
 
             // Apply the prefix filter defined in ListOptions
@@ -213,10 +218,10 @@ public class GitHubBlobStorage : IBlobStorage
                 return;
             }
 
-            // If the item is a directory and recursion is enabled, recursively list its contents
+            // If the fileResponse is a directory and recursion is enabled, recursively list its contents
             if (isDirectory && options.Recurse)
             {
-                await ListInternalAsync(item.Path, options, blobs, cancellationToken);
+                await ListInternalAsync(fileResponse.Path, options, blobs, cancellationToken);
             }
         }
     }
