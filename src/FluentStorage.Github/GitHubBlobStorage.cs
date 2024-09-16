@@ -31,6 +31,10 @@ public class GitHubBlobStorage : IBlobStorage
         };
     }
 
+
+
+
+
     public async Task DeleteAsync(IEnumerable<string> fullPaths, CancellationToken cancellationToken = default)
     {
         if (fullPaths == null || !fullPaths.Any())
