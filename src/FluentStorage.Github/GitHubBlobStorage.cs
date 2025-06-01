@@ -1,9 +1,10 @@
 ﻿using FluentStorage;
 using FluentStorage.Blobs;
-using Newtonsoft.Json;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Olbrasoft.FluentStorage.Github;
 
@@ -14,6 +15,7 @@ public class GitHubBlobStorage : IBlobStorage
     private readonly string _branch;
     private readonly string _token;
     private readonly HttpClient _httpClient;
+    private bool _disposed;
 
     public GitHubBlobStorage(string owner, string repo, string branch, string token)
     {
@@ -31,22 +33,6 @@ public class GitHubBlobStorage : IBlobStorage
         };
     }
 
-
-
-
-
-    public async Task DeleteAsync(IEnumerable<string> fullPaths, CancellationToken cancellationToken = default)
-    {
-        if (fullPaths == null || !fullPaths.Any())
-            throw new ArgumentNullException(nameof(fullPaths));
-
-        foreach (var fullPath in fullPaths)
-        {
-            await DeleteAsync(fullPath, cancellationToken);
-        }
-    }
-
-
     public async Task DeleteAsync(string fullPath, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(fullPath)) throw new ArgumentException("Full path cannot be null or empty", nameof(fullPath));
@@ -62,7 +48,7 @@ public class GitHubBlobStorage : IBlobStorage
         }
 
         var getFileContent = await getResponse.Content.ReadAsStringAsync();
-        var fileInfo = JsonConvert.DeserializeObject<GitHubFileResponse>(getFileContent);
+        var fileInfo = JsonSerializer.Deserialize<GitHubFileResponse>(getFileContent);
 
         // Prepare delete request
         var deleteRequestBody = new
@@ -72,7 +58,7 @@ public class GitHubBlobStorage : IBlobStorage
             branch = _branch
         };
 
-        var deleteJsonRequestBody = JsonConvert.SerializeObject(deleteRequestBody);
+        var deleteJsonRequestBody = JsonSerializer.Serialize(deleteRequestBody);
         var deleteContent = new StringContent(deleteJsonRequestBody, Encoding.UTF8, "application/json");
 
         var requestMessage = new HttpRequestMessage(HttpMethod.Delete, url)
@@ -89,31 +75,30 @@ public class GitHubBlobStorage : IBlobStorage
         }
     }
 
+    public async Task DeleteAsync(IEnumerable<string> fullPaths, CancellationToken cancellationToken = default)
+    {
+        if (fullPaths == null) throw new ArgumentNullException(nameof(fullPaths));
+
+        foreach (string path in fullPaths)
+        {
+            await DeleteAsync(path, cancellationToken);
+        }
+    }
+
     public async Task<IReadOnlyCollection<bool>> ExistsAsync(IEnumerable<string> fullPaths, CancellationToken cancellationToken = default)
     {
-        if (fullPaths == null || !fullPaths.Any())
-            if (fullPaths == null || !fullPaths.Any())
-                throw new ArgumentNullException(nameof(fullPaths));
+        if (fullPaths == null) throw new ArgumentNullException(nameof(fullPaths));
 
-        var results = new List<bool>(fullPaths.Count());
+        var results = new List<bool>();
 
-        foreach (var fullPath in fullPaths)
+        foreach (string path in fullPaths)
         {
-            if (string.IsNullOrWhiteSpace(fullPath))
-            {
-                results.Add(false);
-                continue;
-            }
-
-            var requestUrl = GetGitHubFileUrl(fullPath);
-            var response = await _httpClient.GetAsync(requestUrl, cancellationToken);
+            var url = GetGitHubFileUrl(path);
+            var response = await _httpClient.GetAsync(url, cancellationToken);
             results.Add(response.IsSuccessStatusCode);
         }
 
         return results.AsReadOnly();
-        throw new ArgumentNullException(nameof(fullPaths));
-
-
     }
 
     public async Task<IReadOnlyCollection<Blob>> GetBlobsAsync(IEnumerable<string> fullPaths, CancellationToken cancellationToken = default)
@@ -131,17 +116,17 @@ public class GitHubBlobStorage : IBlobStorage
             if (response.IsSuccessStatusCode)
             {
                 var content = await response.Content.ReadAsStringAsync();
-                var fileResponse = JsonConvert.DeserializeObject<GitHubFileResponse>(content);
+                var fileResponse = JsonSerializer.Deserialize<GitHubFileResponse>(content);
 
                 blobs.Add(new Blob(fullPath)
                 {
-                    Size = fileResponse?.Size, // Assuming Size is part of response
-                    MD5 = fileResponse?.MD5  // Assuming MD5 is part of response
+                    Size = fileResponse?.Size,
+                    MD5 = fileResponse?.MD5
                 });
             }
             else
             {
-                blobs.Add(new Blob(fullPath, BlobItemKind.File)); // Assume file if not found
+                blobs.Add(new Blob(fullPath, BlobItemKind.File));
             }
         }
 
@@ -150,84 +135,64 @@ public class GitHubBlobStorage : IBlobStorage
 
     public async Task<IReadOnlyCollection<Blob>> ListAsync(ListOptions? options = null, CancellationToken cancellationToken = default)
     {
-        // If no options are provided, use default ListOptions
         options ??= new ListOptions();
 
-        // Initialize a list to hold the resulting blobs
+        string path = options.FolderPath ?? string.Empty;
         var blobs = new List<Blob>();
 
-        // Start the recursive listing from the specified folder path
-        await ListInternalAsync(options.FolderPath, options, blobs, cancellationToken);
-
-        // Return the list of blobs as a read-only collection
+        await ListInternalAsync(path, options, blobs, cancellationToken);
+        
         return blobs.AsReadOnly();
     }
 
-    private async Task ListInternalAsync(string currentPath, ListOptions options, List<Blob> blobs, CancellationToken cancellationToken)
+    private async Task ListInternalAsync(string currentPath, ListOptions? options, List<Blob> blobs, CancellationToken cancellationToken)
     {
-        // Construct the URL for the GitHub API request
         var url = GetGitHubFileUrl(currentPath);
-
-        // Send a GET request to the GitHub API
         var response = await _httpClient.GetAsync(url, cancellationToken);
 
-        // If the response indicates the directory does not exist (404 Not Found), return early with an empty list
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
             return;
         }
 
-        // If the response is not successful and it's not a 404, throw an exception
         if (!response.IsSuccessStatusCode)
         {
             var error = await response.Content.ReadAsStringAsync(cancellationToken);
             throw new InvalidOperationException($"Error listing files from GitHub: {response.StatusCode}, {error}");
         }
 
-        // Deserialize the response content into a list of GitHubFileResponse objects
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
-        var fileResponses = JsonConvert.DeserializeObject<List<GitHubFileResponse>>(content);
+        var fileResponses = JsonSerializer.Deserialize<List<GitHubFileResponse>>(content);
 
-        // If the response is empty or null, return early
         if (fileResponses == null || fileResponses.Count == 0)
         {
             return;
         }
 
-        foreach (var fileResponse in fileResponses)
+        foreach (var file in fileResponses)
         {
-            // Determine if the fileResponse is a directory
-            var isDirectory = string.Equals(fileResponse.Type, "dir", StringComparison.OrdinalIgnoreCase);
-            var blobItemKind = isDirectory ? BlobItemKind.Folder : BlobItemKind.File;
-
-            // Create a Blob object for the current fileResponse
-            var blob = new Blob(fileResponse.Path, blobItemKind)
+            if (file.Type == "file")
             {
-                Size = fileResponse.Size ?? 0,
-                MD5 = fileResponse.MD5 ?? string.Empty
-            };
+                string fullPath = file.Path;
+                if (options != null && !options.IsMatch(fullPath)) continue;
 
-            // Apply the prefix filter defined in ListOptions
-            if (!options.IsMatch(blob))
-            {
-                continue;
+                blobs.Add(new Blob(fullPath, BlobItemKind.File)
+                {
+                    Size = file.Size,
+                    MD5 = file.MD5
+                });
             }
-
-            // Add the blob to the list of results
-            blobs.Add(blob);
-
-            // If the maximum number of results is reached, stop processing
-            if (options.MaxResults.HasValue && blobs.Count >= options.MaxResults.Value)
+            else if (file.Type == "dir" && options != null && options.Recurse)
             {
-                return;
-            }
-
-            // If the fileResponse is a directory and recursion is enabled, recursively list its contents
-            if (isDirectory && options.Recurse)
-            {
-                await ListInternalAsync(fileResponse.Path, options, blobs, cancellationToken);
+                await ListInternalAsync(file.Path, options, blobs, cancellationToken);
             }
         }
+    }
+
+    public Task<ITransaction> OpenTransactionAsync()
+    {
+        // GitHub API doesn't support transactions directly
+        throw new NotSupportedException("Transactions are not supported with GitHub Blob Storage");
     }
 
     public async Task<Stream?> OpenReadAsync(string fullPath, CancellationToken cancellationToken = default)
@@ -250,21 +215,19 @@ public class GitHubBlobStorage : IBlobStorage
                     return null;
                 }
 
-                var githubFile = JsonConvert.DeserializeObject<GitHubFileResponse>(jsonResponse);
+                var githubFile = JsonSerializer.Deserialize<GitHubFileResponse>(jsonResponse);
 
                 if (githubFile?.Content == null)
                 {
                     return null;
                 }
 
-                // Dekódujte obsah z base64
+                // Decode content from base64
                 var contentBytes = Convert.FromBase64String(githubFile.Content);
-
-                // Pokud je dekódovaný obsah prázdný, vrátí se prázdný MemoryStream
                 return contentBytes.Length == 0 ? new MemoryStream() : (Stream)new MemoryStream(contentBytes);
             }
 
-            // Pokud je status kód 404, vrátí null, stejně jako Azure Blob Storage pro neexistující blob
+            // If status code is 404, return null, same as Azure Blob Storage for non-existent blob
             if (response.StatusCode == HttpStatusCode.NotFound)
             {
                 return null;
@@ -278,9 +241,12 @@ public class GitHubBlobStorage : IBlobStorage
         return null;
     }
 
-
-    public Task<ITransaction> OpenTransactionAsync() => throw new NotImplementedException();
-
+    public Task SetBlobsAsync(IEnumerable<Blob> blobs, CancellationToken cancellationToken = default)
+    {
+        // GitHub API doesn't directly support setting just blob metadata
+        // This method is typically used to set metadata without changing blob content
+        throw new NotSupportedException("Setting blob metadata only is not supported with GitHub Blob Storage");
+    }
 
     public async Task WriteAsync(string fullPath, Stream dataStream, bool append = false, CancellationToken token = default)
     {
@@ -289,7 +255,6 @@ public class GitHubBlobStorage : IBlobStorage
 
         ArgumentNullException.ThrowIfNull(dataStream);
 
-        // Read the stream into a byte array
         byte[] fileBytes;
         using (var memoryStream = new MemoryStream())
         {
@@ -297,22 +262,16 @@ public class GitHubBlobStorage : IBlobStorage
             fileBytes = memoryStream.ToArray();
         }
 
-        // Convert file content to Base64 string
         var content = Convert.ToBase64String(fileBytes);
-
-        // Build the URL for the GitHub API request
         var url = GetGitHubFileUrl(fullPath);
 
-        // Check if the file already exists
         var existingFileResponse = await _httpClient.GetAsync(url, token);
 
         if (existingFileResponse.IsSuccessStatusCode)
         {
-            // If the file exists, retrieve its SHA for deletion
             var existingFileJson = await existingFileResponse.Content.ReadAsStringAsync();
-            var existingFile = JsonConvert.DeserializeObject<GitHubFileResponse>(existingFileJson);
+            var existingFile = JsonSerializer.Deserialize<GitHubFileResponse>(existingFileJson);
 
-            // Delete the existing file
             var deleteRequestBody = new
             {
                 message = "Delete existing file to replace with a new one",
@@ -320,7 +279,7 @@ public class GitHubBlobStorage : IBlobStorage
                 branch = _branch
             };
 
-            var deleteJsonRequestBody = JsonConvert.SerializeObject(deleteRequestBody);
+            var deleteJsonRequestBody = JsonSerializer.Serialize(deleteRequestBody);
             var deleteContent = new StringContent(deleteJsonRequestBody, Encoding.UTF8, "application/json");
             var deleteRequest = new HttpRequestMessage(HttpMethod.Delete, url)
             {
@@ -336,22 +295,17 @@ public class GitHubBlobStorage : IBlobStorage
             }
         }
 
-        // Prepare the request body for creating or updating the file
         var requestBody = new
         {
             message = append ? "Append to existing file" : "Create or overwrite file",
             content,
-            branch = _branch // Target branch to upload the file
+            branch = _branch
         };
 
-        // Serialize the request body to JSON format
-        var jsonRequestBody = JsonConvert.SerializeObject(requestBody);
-
-        // Create an HTTP PUT request with the file content
+        var jsonRequestBody = JsonSerializer.Serialize(requestBody);
         var contentString = new StringContent(jsonRequestBody, Encoding.UTF8, "application/json");
         var response = await _httpClient.PutAsync(url, contentString, token);
 
-        // Handle the response
         if (!response.IsSuccessStatusCode)
         {
             var error = await response.Content.ReadAsStringAsync(token);
@@ -359,42 +313,53 @@ public class GitHubBlobStorage : IBlobStorage
         }
     }
 
+    private Uri GetGitHubFileUrl(string fullPath)
+    {
+        // Ensure the path starts without a slash for GitHub API
+        fullPath = fullPath.TrimStart('/');
+
+        // Create GitHub API URL for accessing repository contents
+        string url = $"https://api.github.com/repos/{_owner}/{_repo}/contents/{fullPath}?ref={_branch}";
+
+        return new Uri(url);
+    }
 
     public void Dispose()
     {
-        _httpClient?.Dispose();
+        Dispose(true);
         GC.SuppressFinalize(this);
     }
 
-    private string GetGitHubFileUrl(string fullPath)
+    protected virtual void Dispose(bool disposing)
     {
-        return $"https://api.github.com/repos/{_owner}/{_repo}/contents/{fullPath}";
-    }
+        if (_disposed) return;
 
-    public Task SetBlobsAsync(IEnumerable<Blob> blobs, CancellationToken cancellationToken = default)
-    {
-        throw new NotImplementedException();
+        if (disposing)
+        {
+            _httpClient?.Dispose();
+        }
+
+        _disposed = true;
     }
 
     private class GitHubFileResponse
     {
-        [JsonProperty("content")]
+        [JsonPropertyName("content")]
         public string? Content { get; set; }
 
-        [JsonProperty("sha")]
+        [JsonPropertyName("sha")]
         public string Sha { get; set; } = string.Empty;
 
-        [JsonProperty("path")]
+        [JsonPropertyName("path")]
         public string Path { get; set; } = string.Empty;
 
-        [JsonProperty("size")]
+        [JsonPropertyName("size")]
         public long? Size { get; set; }
 
-        [JsonProperty("md5")]
+        [JsonPropertyName("md5")]
         public string MD5 { get; set; } = string.Empty;
 
-        [JsonProperty("type")]
+        [JsonPropertyName("type")]
         public string Type { get; set; } = string.Empty;
     }
 }
-
