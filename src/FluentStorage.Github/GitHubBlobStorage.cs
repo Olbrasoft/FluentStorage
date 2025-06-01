@@ -199,7 +199,7 @@ public class GitHubBlobStorage : IBlobStorage
     {
         options ??= new ListOptions();
 
-        string path = options.FolderPath ?? string.Empty;
+        var path = options.FolderPath ?? string.Empty;
         var blobs = new List<Blob>();
 
         await ListInternalAsync(path, options, blobs, cancellationToken);
@@ -326,13 +326,12 @@ public class GitHubBlobStorage : IBlobStorage
     /// <param name="blobs">The collection of blobs with metadata to set.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A task that represents the asynchronous operation.</returns>
-    /// <exception cref="NotSupportedException">Always thrown as setting blob metadata is not supported by GitHub Blob Storage.</exception>
+    /// <exception cref="NotSupportedException">Always thrown as GitHub Blob Storage does not support setting blob metadata.</exception>
     public Task SetBlobsAsync(IEnumerable<Blob> blobs, CancellationToken cancellationToken = default)
     {
         // Prevent compiler warning about possible multiple enumeration
         // Even though this code will never execute due to the exception
-        if (blobs == null)
-            throw new ArgumentNullException(nameof(blobs));
+        ArgumentNullException.ThrowIfNull(blobs);
 
         // GitHub API doesn't directly support setting just blob metadata
         throw new NotSupportedException("Setting blob metadata only is not supported with GitHub Blob Storage");
@@ -343,7 +342,7 @@ public class GitHubBlobStorage : IBlobStorage
     /// </summary>
     /// <param name="fullPath">The full path to the blob.</param>
     /// <param name="dataStream">The stream containing data to write.</param>
-    /// <param name="append">Whether to append to existing data (not fully supported in GitHub).</param>
+    /// <param name="append">If true, appends data to the existing blob; otherwise, overwrites the blob.</param>
     /// <param name="token">The cancellation token.</param>
     /// <returns>A task that represents the asynchronous operation.</returns>
     /// <exception cref="ArgumentNullException">Thrown when fullPath or dataStream is null.</exception>
@@ -355,60 +354,50 @@ public class GitHubBlobStorage : IBlobStorage
 
         ArgumentNullException.ThrowIfNull(dataStream);
 
-        // Initialize the variable directly at declaration to prevent warning
-        byte[] fileBytes;
+        byte[] newFileBytes;
         using (var memoryStream = new MemoryStream())
         {
             await dataStream.CopyToAsync(memoryStream, token);
-            fileBytes = memoryStream.ToArray();
+            newFileBytes = memoryStream.ToArray();
         }
 
-        var content = Convert.ToBase64String(fileBytes);
         var url = GetGitHubFileUrl(fullPath);
+        var finalContentBytes = newFileBytes;
+        string? existingSha = null;
 
         var existingFileResponse = await _httpClient.GetAsync(url, token);
-
         if (existingFileResponse.IsSuccessStatusCode)
         {
             var existingFileJson = await existingFileResponse.Content.ReadAsStringAsync(token);
             var existingFile = JsonSerializer.Deserialize<GitHubFileResponse>(existingFileJson);
+            existingSha = existingFile?.Sha;
 
-            if (existingFile == null)
+            if (append && existingFile?.Content != null)
             {
-                throw new InvalidOperationException("Failed to deserialize existing GitHub file info");
-            }
-
-            var deleteRequestBody = new
-            {
-                message = "Delete existing file to replace with a new one",
-                sha = existingFile.Sha,
-                branch = _branch
-            };
-
-            var deleteJsonRequestBody = JsonSerializer.Serialize(deleteRequestBody);
-            var deleteContent = new StringContent(deleteJsonRequestBody, Encoding.UTF8, "application/json");
-            var deleteRequest = new HttpRequestMessage(HttpMethod.Delete, url)
-            {
-                Content = deleteContent
-            };
-
-            var deleteResponse = await _httpClient.SendAsync(deleteRequest, token);
-
-            if (!deleteResponse.IsSuccessStatusCode)
-            {
-                var error = await deleteResponse.Content.ReadAsStringAsync(token);
-                throw new InvalidOperationException($"Error deleting file from GitHub: {deleteResponse.StatusCode}, {error}");
+                // Append new content to the existing file content
+                var existingContentBytes = Convert.FromBase64String(existingFile.Content.Replace("\n", string.Empty));
+                using var combinedStream = new MemoryStream();
+                combinedStream.Write(existingContentBytes, 0, existingContentBytes.Length);
+                combinedStream.Write(newFileBytes, 0, newFileBytes.Length);
+                finalContentBytes = combinedStream.ToArray();
             }
         }
+        else if (append)
+        {
+            // If append and file dos not exist, behave as create
+            finalContentBytes = newFileBytes;
+        }
 
+        var content = Convert.ToBase64String(finalContentBytes);
         var requestBody = new
         {
             message = append ? "Append to existing file" : "Create or overwrite file",
             content,
-            branch = _branch
+            branch = _branch,
+            sha = existingSha // null if the file does not exist
         };
 
-        var jsonRequestBody = JsonSerializer.Serialize(requestBody);
+        var jsonRequestBody = JsonSerializer.Serialize(requestBody, new JsonSerializerOptions { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull });
         var contentString = new StringContent(jsonRequestBody, Encoding.UTF8, "application/json");
         var response = await _httpClient.PutAsync(url, contentString, token);
 
