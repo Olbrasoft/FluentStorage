@@ -1,8 +1,7 @@
 ﻿using FluentStorage;
 using FluentStorage.Blobs;
 using System.Net;
-using System.Net.Http.Headers;
-using System.Text;
+using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -11,36 +10,20 @@ namespace Olbrasoft.FluentStorage.Github;
 /// <summary>
 /// Implementation of <see cref="IBlobStorage"/> that uses GitHub repository as a blob storage.
 /// </summary>
-public class GitHubBlobStorage : IBlobStorage
+public class GitHubBlobStorage : IBlobStorage, IDisposable
 {
-    private readonly string _owner;
-    private readonly string _repo;
+    private readonly GitHubApiClient _apiClient;
+    private readonly GitHubUrlBuilder _urlBuilder;
     private readonly string _branch;
-    private readonly string _token;
-    private readonly HttpClient _httpClient;
     private bool _disposed;
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="GitHubBlobStorage"/> class.
-    /// </summary>
-    /// <param name="owner">The GitHub repository owner (username or organization).</param>
-    /// <param name="repo">The GitHub repository name.</param>
-    /// <param name="branch">The branch to use (e.g., "main" or "master").</param>
-    /// <param name="token">The GitHub personal access token with repository access.</param>
+
+
     public GitHubBlobStorage(string owner, string repo, string branch, string token)
     {
-        _owner = owner ?? throw new ArgumentNullException(nameof(owner));
-        _repo = repo ?? throw new ArgumentNullException(nameof(repo));
         _branch = branch ?? throw new ArgumentNullException(nameof(branch));
-        _token = token ?? throw new ArgumentNullException(nameof(token));
-        _httpClient = new HttpClient
-        {
-            DefaultRequestHeaders =
-            {
-                Authorization = new AuthenticationHeaderValue("token", _token),
-                UserAgent = { ProductInfoHeaderValue.Parse("GitHubBlobStorage") }
-            }
-        };
+        _urlBuilder = new GitHubUrlBuilder(owner, repo, branch);
+        _apiClient = new GitHubApiClient(token);
     }
 
     /// <summary>
@@ -55,19 +38,18 @@ public class GitHubBlobStorage : IBlobStorage
     {
         if (string.IsNullOrEmpty(fullPath)) throw new ArgumentException("Full path cannot be null or empty", nameof(fullPath));
 
-        var url = GetGitHubFileUrl(fullPath);
+        var url = _urlBuilder.BuildFileUrl(fullPath);
 
         // Get file info to get SHA
-        var getResponse = await _httpClient.GetAsync(url, cancellationToken);
+        var getResponse = await _apiClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
         if (!getResponse.IsSuccessStatusCode)
         {
             // If the file doesn't exist, we simply skip it
             return;
         }
 
-        var getFileContent = await getResponse.Content.ReadAsStringAsync(cancellationToken);
+        var getFileContent = await getResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         var fileInfo = JsonSerializer.Deserialize<GitHubFileResponse>(getFileContent);
-        
         if (fileInfo == null)
         {
             throw new InvalidOperationException("Failed to deserialize GitHub file info");
@@ -81,19 +63,11 @@ public class GitHubBlobStorage : IBlobStorage
             branch = _branch
         };
 
-        var deleteJsonRequestBody = JsonSerializer.Serialize(deleteRequestBody);
-        var deleteContent = new StringContent(deleteJsonRequestBody, Encoding.UTF8, "application/json");
-
-        var requestMessage = new HttpRequestMessage(HttpMethod.Delete, url)
-        {
-            Content = deleteContent
-        };
-
-        var deleteResponse = await _httpClient.SendAsync(requestMessage, cancellationToken);
+        var deleteResponse = await _apiClient.DeleteAsync(url, deleteRequestBody, cancellationToken).ConfigureAwait(false);
 
         if (!deleteResponse.IsSuccessStatusCode)
         {
-            var error = await deleteResponse.Content.ReadAsStringAsync(cancellationToken);
+            var error = await deleteResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             throw new InvalidOperationException($"Error deleting file from GitHub: {deleteResponse.StatusCode}, {error}");
         }
     }
@@ -113,7 +87,7 @@ public class GitHubBlobStorage : IBlobStorage
         var pathsList = fullPaths.ToList();
         foreach (var path in pathsList)
         {
-            await DeleteAsync(path, cancellationToken);
+            await DeleteAsync(path, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -132,9 +106,10 @@ public class GitHubBlobStorage : IBlobStorage
         // Convert to list to avoid multiple enumeration
         var pathsList = fullPaths.ToList();
 
-        foreach (var url in pathsList.Select(GetGitHubFileUrl))
+        foreach (var fullPath in pathsList)
         {
-            var response = await _httpClient.GetAsync(url, cancellationToken);
+            var url = _urlBuilder.BuildFileUrl(fullPath);
+            var response = await _apiClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
             results.Add(response.IsSuccessStatusCode);
         }
 
@@ -155,7 +130,7 @@ public class GitHubBlobStorage : IBlobStorage
 
         // Convert to list immediately to avoid multiple enumeration
         var pathsList = fullPaths.ToList();
-        
+
         if (pathsList.Count == 0)
             throw new ArgumentException("Collection cannot be empty", nameof(fullPaths));
 
@@ -163,12 +138,11 @@ public class GitHubBlobStorage : IBlobStorage
 
         foreach (var fullPath in pathsList)
         {
-            var url = GetGitHubFileUrl(fullPath);
-
-            using var response = await _httpClient.GetAsync(url, cancellationToken);
+            var url = _urlBuilder.BuildFileUrl(fullPath);
+            using var response = await _apiClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {
-                var content = await response.Content.ReadAsStringAsync(cancellationToken);
+                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 var fileResponse = JsonSerializer.Deserialize<GitHubFileResponse>(content);
 
                 var blob = new Blob(fullPath);
@@ -202,16 +176,16 @@ public class GitHubBlobStorage : IBlobStorage
         var path = options.FolderPath ?? string.Empty;
         var blobs = new List<Blob>();
 
-        await ListInternalAsync(path, options, blobs, cancellationToken);
-        
+        await ListInternalAsync(path, options, blobs, cancellationToken).ConfigureAwait(false);
+
         return blobs.AsReadOnly();
     }
 
     private async Task ListInternalAsync(string currentPath, ListOptions options, List<Blob> blobs, CancellationToken cancellationToken)
     {
         // Removed redundant null checks that are guaranteed by the caller
-        var url = GetGitHubFileUrl(currentPath);
-        var response = await _httpClient.GetAsync(url, cancellationToken);
+        var url = _urlBuilder.BuildFileUrl(currentPath);
+        var response = await _apiClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
@@ -220,11 +194,11 @@ public class GitHubBlobStorage : IBlobStorage
 
         if (!response.IsSuccessStatusCode)
         {
-            var error = await response.Content.ReadAsStringAsync(cancellationToken);
+            var error = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             throw new InvalidOperationException($"An error listing files from GitHub: {response.StatusCode}, {error}");
         }
 
-        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+        var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         var fileResponses = JsonSerializer.Deserialize<List<GitHubFileResponse>>(content);
 
         if (fileResponses == null || fileResponses.Count == 0)
@@ -237,19 +211,19 @@ public class GitHubBlobStorage : IBlobStorage
             switch (file.Type)
             {
                 case "file":
-                {
-                    var fullPath = file.Path;
-                    if (!options.IsMatch(fullPath)) continue;
-
-                    blobs.Add(new Blob(fullPath)
                     {
-                        Size = file.Size,
-                        MD5 = file.Md5 ?? string.Empty
-                    });
-                    break;
-                }
+                        var fullPath = file.Path;
+                        if (!options.IsMatch(fullPath)) continue;
+
+                        blobs.Add(new Blob(fullPath)
+                        {
+                            Size = file.Size,
+                            MD5 = file.Md5 ?? string.Empty
+                        });
+                        break;
+                    }
                 case "dir" when options.Recurse:
-                    await ListInternalAsync(file.Path, options, blobs, cancellationToken);
+                    await ListInternalAsync(file.Path, options, blobs, cancellationToken).ConfigureAwait(false);
                     break;
             }
         }
@@ -279,33 +253,26 @@ public class GitHubBlobStorage : IBlobStorage
         if (string.IsNullOrEmpty(fullPath))
             throw new ArgumentNullException(nameof(fullPath));
 
-        var url = GetGitHubFileUrl(fullPath);
-
+        var url = _urlBuilder.BuildFileUrl(fullPath);
         try
         {
-            var response = await _httpClient.GetAsync(url, cancellationToken);
-
+            var response = await _apiClient.GetAsync(url, cancellationToken);
             if (response.IsSuccessStatusCode)
             {
                 var jsonResponse = await response.Content.ReadAsStringAsync(cancellationToken);
-
                 if (string.IsNullOrEmpty(jsonResponse))
                 {
                     return null;
                 }
-
                 var githubFile = JsonSerializer.Deserialize<GitHubFileResponse>(jsonResponse);
-
                 if (githubFile?.Content == null)
                 {
                     return null;
                 }
-
                 // Decode content from base64
                 var contentBytes = Convert.FromBase64String(githubFile.Content);
                 return new MemoryStream(contentBytes);
             }
-
             // If status code is 404, return null, same as Azure Blob Storage for non-existent blob
             if (response.StatusCode == HttpStatusCode.NotFound)
             {
@@ -316,7 +283,6 @@ public class GitHubBlobStorage : IBlobStorage
         {
             throw new InvalidOperationException("An error occurred while accessing the GitHub file.", ex);
         }
-
         return null;
     }
 
@@ -361,11 +327,11 @@ public class GitHubBlobStorage : IBlobStorage
             newFileBytes = memoryStream.ToArray();
         }
 
-        var url = GetGitHubFileUrl(fullPath);
+        var url = _urlBuilder.BuildFileUrl(fullPath);
         var finalContentBytes = newFileBytes;
         string? existingSha = null;
 
-        var existingFileResponse = await _httpClient.GetAsync(url, token);
+        var existingFileResponse = await _apiClient.GetAsync(url, token);
         if (existingFileResponse.IsSuccessStatusCode)
         {
             var existingFileJson = await existingFileResponse.Content.ReadAsStringAsync(token);
@@ -384,7 +350,7 @@ public class GitHubBlobStorage : IBlobStorage
         }
         else if (append)
         {
-            // If append and file dos not exist, behave as create
+            // If append and file does not exist, behave as create
             finalContentBytes = newFileBytes;
         }
 
@@ -397,9 +363,7 @@ public class GitHubBlobStorage : IBlobStorage
             sha = existingSha // null if the file does not exist
         };
 
-        var jsonRequestBody = JsonSerializer.Serialize(requestBody, new JsonSerializerOptions { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull });
-        var contentString = new StringContent(jsonRequestBody, Encoding.UTF8, "application/json");
-        var response = await _httpClient.PutAsync(url, contentString, token);
+        var response = await _apiClient.PutAsync(url, requestBody, token);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -408,21 +372,7 @@ public class GitHubBlobStorage : IBlobStorage
         }
     }
 
-    /// <summary>
-    /// Constructs a GitHub API URL for accessing a file or directory.
-    /// </summary>
-    /// <param name="fullPath">The full path to the file or directory.</param>
-    /// <returns>The GitHub API URL.</returns>
-    private Uri GetGitHubFileUrl(string fullPath)
-    {
-        // Ensure the path starts without a slash for GitHub API
-        fullPath = fullPath.TrimStart('/');
-
-        // Create GitHub API URL for accessing repository contents
-        string url = $"https://api.github.com/repos/{_owner}/{_repo}/contents/{fullPath}?ref={_branch}";
-
-        return new Uri(url);
-    }
+    // ...existing code...
 
     /// <summary>
     /// Disposes the resources used by this instance.
@@ -433,20 +383,13 @@ public class GitHubBlobStorage : IBlobStorage
         GC.SuppressFinalize(this);
     }
 
-    /// <summary>
-    /// Disposes the resources used by this instance.
-    /// </summary>
-    /// <param name="disposing">Whether to dispose managed resources.</param>
     protected virtual void Dispose(bool disposing)
     {
         if (_disposed) return;
-
         if (disposing)
         {
-            // Remove unnecessary null check since _httpClient is initialized in constructor
-            _httpClient.Dispose();
+            _apiClient.Dispose();
         }
-
         _disposed = true;
     }
 
