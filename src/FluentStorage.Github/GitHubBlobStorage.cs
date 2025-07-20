@@ -41,14 +41,14 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
         var url = _urlBuilder.BuildFileUrl(fullPath);
 
         // Get file info to get SHA
-        var getResponse = await _apiClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+        var getResponse = await _apiClient.GetAsync(url, cancellationToken);
         if (!getResponse.IsSuccessStatusCode)
         {
             // If the file doesn't exist, we simply skip it
             return;
         }
 
-        var getFileContent = await getResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var getFileContent = await getResponse.Content.ReadAsStringAsync(cancellationToken);
         var fileInfo = JsonSerializer.Deserialize<GitHubFileResponse>(getFileContent);
         if (fileInfo == null)
         {
@@ -63,11 +63,11 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
             branch = _branch
         };
 
-        var deleteResponse = await _apiClient.DeleteAsync(url, deleteRequestBody, cancellationToken).ConfigureAwait(false);
+        var deleteResponse = await _apiClient.DeleteAsync(url, deleteRequestBody, cancellationToken);
 
         if (!deleteResponse.IsSuccessStatusCode)
         {
-            var error = await deleteResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var error = await deleteResponse.Content.ReadAsStringAsync(cancellationToken);
             throw new InvalidOperationException($"Error deleting file from GitHub: {deleteResponse.StatusCode}, {error}");
         }
     }
@@ -87,7 +87,7 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
         var pathsList = fullPaths.ToList();
         foreach (var path in pathsList)
         {
-            await DeleteAsync(path, cancellationToken).ConfigureAwait(false);
+            await DeleteAsync(path, cancellationToken);
         }
     }
 
@@ -109,7 +109,7 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
         foreach (var fullPath in pathsList)
         {
             var url = _urlBuilder.BuildFileUrl(fullPath);
-            var response = await _apiClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            var response = await _apiClient.GetAsync(url, cancellationToken);
             results.Add(response.IsSuccessStatusCode);
         }
 
@@ -139,10 +139,10 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
         foreach (var fullPath in pathsList)
         {
             var url = _urlBuilder.BuildFileUrl(fullPath);
-            using var response = await _apiClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            using var response = await _apiClient.GetAsync(url, cancellationToken);
             if (response.IsSuccessStatusCode)
             {
-                var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = await response.Content.ReadAsStringAsync(cancellationToken);
                 var fileResponse = JsonSerializer.Deserialize<GitHubFileResponse>(content);
 
                 var blob = new Blob(fullPath);
@@ -185,7 +185,7 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
     {
         // Removed redundant null checks that are guaranteed by the caller
         var url = _urlBuilder.BuildFileUrl(currentPath);
-        var response = await _apiClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+        var response = await _apiClient.GetAsync(url, cancellationToken);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
@@ -194,11 +194,11 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
 
         if (!response.IsSuccessStatusCode)
         {
-            var error = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var error = await response.Content.ReadAsStringAsync(cancellationToken);
             throw new InvalidOperationException($"An error listing files from GitHub: {response.StatusCode}, {error}");
         }
 
-        var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
         var fileResponses = JsonSerializer.Deserialize<List<GitHubFileResponse>>(content);
 
         if (fileResponses == null || fileResponses.Count == 0)
@@ -223,7 +223,7 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
                         break;
                     }
                 case "dir" when options.Recurse:
-                    await ListInternalAsync(file.Path, options, blobs, cancellationToken).ConfigureAwait(false);
+                    await ListInternalAsync(file.Path, options, blobs, cancellationToken);
                     break;
             }
         }

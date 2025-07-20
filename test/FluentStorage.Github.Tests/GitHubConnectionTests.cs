@@ -1,4 +1,6 @@
-﻿namespace Olbrasoft.FluentStorage.Github.Tests;
+﻿
+namespace Olbrasoft.FluentStorage.Github.Tests;
+
 public class GitHubConnectionTests
 {
 

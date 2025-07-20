@@ -1,4 +1,5 @@
-﻿namespace Olbrasoft.FluentStorage.Github;
+﻿
+namespace Olbrasoft.FluentStorage.Github;
 
 public class GitHubConnection
 {
@@ -14,10 +15,6 @@ public class GitHubConnection
         Repository = repository;
         Branch = branch;
         Token = token;
-    }
-
-    public GitHubConnection()
-    {
     }
 
 }

@@ -97,10 +97,10 @@ public class GitHubBlobStorageTests
 
     private class Secrets
     {
-        public string? GitHubToken { get; set; }
+        public string? GitHubToken { get; init; }
     }
 
-    private Secrets? LoadSecrets()
+    private static Secrets? LoadSecrets()
     {
         // Cesta k secrets.json relativně k projektu
         var path = Path.Combine(Directory.GetParent(Directory.GetCurrentDirectory())?.Parent?.Parent?.FullName ?? "", "secrets.json");
@@ -109,7 +109,7 @@ public class GitHubBlobStorageTests
     }
 
 
-    //writeasnc test
+    //write async test
     [Fact]
     public async Task WriteAsync()
     {

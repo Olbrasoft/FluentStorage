@@ -6,7 +6,12 @@
     <Nullable>enable</Nullable>
     <RootNamespace>Olbrasoft.$(MSBuildProjectName.Replace(" ", "_"))</RootNamespace>
     <AssemblyName>Olbrasoft.$(MSBuildProjectName)</AssemblyName>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisMode>AllEnabledByDefault</AnalysisMode>
+    <!-- Suppress ConfigureAwait analyzer warnings -->
+    <NoWarn>$(NoWarn);CA2007</NoWarn>
   </PropertyGroup>
+
 
   <ItemGroup>
     <PackageReference Include="FluentStorage" Version="5.5.1" />
