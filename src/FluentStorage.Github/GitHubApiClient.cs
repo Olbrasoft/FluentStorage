@@ -1,4 +1,3 @@
-using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -24,7 +23,7 @@ namespace Olbrasoft.FluentStorage.Github
             if (_httpClient.DefaultRequestHeaders.Authorization == null)
                 _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("token", token);
 
-            if (!_httpClient.DefaultRequestHeaders.UserAgent.Any())
+            if (_httpClient.DefaultRequestHeaders.UserAgent.Count == 0)
                 _httpClient.DefaultRequestHeaders.UserAgent.Add(ProductInfoHeaderValue.Parse("GitHubBlobStorage"));
         }
 
@@ -36,7 +35,7 @@ namespace Olbrasoft.FluentStorage.Github
         public async Task<HttpResponseMessage> PutAsync(Uri url, object body, CancellationToken cancellationToken)
         {
             var json = JsonSerializer.Serialize(body);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
+            using var content = new StringContent(json, Encoding.UTF8, "application/json");
             return await _httpClient.PutAsync(url, content, cancellationToken);
         }
 
@@ -44,7 +43,7 @@ namespace Olbrasoft.FluentStorage.Github
         {
             var json = JsonSerializer.Serialize(body);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
-            var request = new HttpRequestMessage(HttpMethod.Delete, url)
+            using var request = new HttpRequestMessage(HttpMethod.Delete, url)
             {
                 Content = content
             };
@@ -53,8 +52,17 @@ namespace Olbrasoft.FluentStorage.Github
 
         public void Dispose()
         {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
             if (_disposed) return;
-            _httpClient.Dispose();
+            if (disposing)
+            {
+                _httpClient.Dispose();
+            }
             _disposed = true;
         }
     }
