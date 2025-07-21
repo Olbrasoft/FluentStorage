@@ -28,6 +28,18 @@ FluentStorage.Github is an extension library that enables you to use GitHub repo
 
 ## Installation
 
+> **Note**: This package is currently under development and not yet published to NuGet.
+
+For now, you can clone this repository and build it locally:
+
+```bash
+git clone https://github.com/Olbrasoft/FluentStorage.git
+cd FluentStorage
+dotnet build
+```
+
+Once published, it will be available as:
+
 ```bash
 dotnet add package Olbrasoft.FluentStorage.Github
 ```
