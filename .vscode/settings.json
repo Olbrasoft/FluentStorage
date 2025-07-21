@@ -7,5 +7,11 @@
     "dotnet.unitTests.enableCodeLens": true,
     "csharp.semanticHighlighting.enabled": true,
     "omnisharp.enableRoslynAnalyzers": true,
-    "omnisharp.useModernNet": true
+    "omnisharp.useModernNet": true,
+    "debug.allowBreakpointsEverywhere": true,
+    "debug.showInlineBreakpointCandidates": true,
+    "debug.showSubSessionsInToolBar": true,
+    "csharp.debug.justMyCode": true,
+    "csharp.debug.suppressJITOptimizations": true,
+    "csharp.debug.enableStepFiltering": true
 }

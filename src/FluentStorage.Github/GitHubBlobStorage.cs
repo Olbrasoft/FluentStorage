@@ -1,7 +1,6 @@
 ﻿using FluentStorage;
 using FluentStorage.Blobs;
 using System.Net;
-using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -12,16 +11,41 @@ namespace Olbrasoft.FluentStorage.Github;
 /// </summary>
 public class GitHubBlobStorage : IBlobStorage, IDisposable
 {
-    private readonly GitHubApiClient _apiClient;
-    private readonly GitHubUrlBuilder _urlBuilder;
+    private readonly IGitHubApiClient _apiClient;
+    private readonly IGitHubUrlBuilder _urlBuilder;
     private readonly string _branch;
     private bool _disposed;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="GitHubBlobStorage"/> class.
+    /// </summary>
+    /// <param name="apiClient">The GitHub API client for making HTTP requests.</param>
+    /// <param name="urlBuilder">The URL builder for constructing GitHub API URLs.</param>
+    /// <exception cref="ArgumentNullException">Thrown when apiClient or urlBuilder is null.</exception>
+    public GitHubBlobStorage(IGitHubApiClient apiClient, IGitHubUrlBuilder urlBuilder)
+    {
+        ArgumentNullException.ThrowIfNull(apiClient);
+        ArgumentNullException.ThrowIfNull(urlBuilder);
 
+        _apiClient = apiClient;
+        _urlBuilder = urlBuilder;
+        _branch = _urlBuilder.Branch;
+    }
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="GitHubBlobStorage"/> class with repository parameters.
+    /// </summary>
+    /// <param name="owner">The GitHub repository owner.</param>
+    /// <param name="repo">The GitHub repository name.</param>
+    /// <param name="branch">The branch name to work with.</param>
+    /// <param name="token">The GitHub personal access token.</param>
+    /// <exception cref="ArgumentNullException">Thrown when branch is null.</exception>
+    /// <exception cref="ArgumentException">Thrown when owner, repo, or token parameters are invalid.</exception>
     public GitHubBlobStorage(string owner, string repo, string branch, string token)
     {
-        _branch = branch ?? throw new ArgumentNullException(nameof(branch));
+        ArgumentNullException.ThrowIfNull(branch);
+
+        _branch = branch;
         _urlBuilder = new GitHubUrlBuilder(owner, repo, branch);
         _apiClient = new GitHubApiClient(token);
     }
@@ -40,35 +64,53 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
 
         var url = _urlBuilder.BuildFileUrl(fullPath);
 
-        // Get file info to get SHA
-        var getResponse = await _apiClient.GetAsync(url, cancellationToken);
-        if (!getResponse.IsSuccessStatusCode)
+        // Retry logic for SHA conflicts (max 3 attempts)
+        const int maxRetries = 3;
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
-            // If the file doesn't exist, we simply skip it
-            return;
-        }
+            // Get current file info to get the latest SHA
+            var getResponse = await _apiClient.GetAsync(url, cancellationToken);
+            if (!getResponse.IsSuccessStatusCode)
+            {
+                // If the file doesn't exist, we simply skip it
+                return;
+            }
 
-        var getFileContent = await getResponse.Content.ReadAsStringAsync(cancellationToken);
-        var fileInfo = JsonSerializer.Deserialize<GitHubFileResponse>(getFileContent);
-        if (fileInfo == null)
-        {
-            throw new InvalidOperationException("Failed to deserialize GitHub file info");
-        }
+            var getFileContent = await getResponse.Content.ReadAsStringAsync(cancellationToken);
+            var fileInfo = JsonSerializer.Deserialize<GitHubFileResponse>(getFileContent) ?? throw new InvalidOperationException("Failed to deserialize GitHub file info");
 
-        // Prepare delete request
-        var deleteRequestBody = new
-        {
-            message = $"Delete {fullPath}",
-            sha = fileInfo.Sha,
-            branch = _branch
-        };
+            // Prepare delete request with current SHA
+            var deleteRequestBody = new
+            {
+                message = $"Delete {fullPath}",
+                sha = fileInfo.Sha,
+                branch = _branch
+            };
 
-        var deleteResponse = await _apiClient.DeleteAsync(url, deleteRequestBody, cancellationToken);
+            var deleteResponse = await _apiClient.DeleteAsync(url, deleteRequestBody, cancellationToken);
 
-        if (!deleteResponse.IsSuccessStatusCode)
-        {
+            if (deleteResponse.IsSuccessStatusCode)
+            {
+                // Success - file deleted
+                return;
+            }
+
+            if (deleteResponse.StatusCode == HttpStatusCode.Conflict && attempt < maxRetries)
+            {
+                // SHA conflict - retry with a small delay
+                await Task.Delay(100 * attempt, cancellationToken); // Progressive delay: 100ms, 200ms, 300ms
+                continue;
+            }
+
+            if (deleteResponse.StatusCode == HttpStatusCode.NotFound)
+            {
+                // File doesn't exist - this is not an error for delete operation
+                return;
+            }
+
+            // Other error or max retries reached
             var error = await deleteResponse.Content.ReadAsStringAsync(cancellationToken);
-            throw new InvalidOperationException($"Error deleting file from GitHub: {deleteResponse.StatusCode}, {error}");
+            throw new InvalidOperationException($"Error deleting file from GitHub after {attempt} attempts: {deleteResponse.StatusCode}, {error}");
         }
     }
 
@@ -173,7 +215,16 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
     {
         options ??= new ListOptions();
 
-        var path = options.FolderPath ?? string.Empty;
+        string path;
+        if (options.FolderPath != null)
+        {
+            path = options.FolderPath;
+        }
+        else
+        {
+            path = string.Empty;
+        }
+
         var blobs = new List<Blob>();
 
         await ListInternalAsync(path, options, blobs, cancellationToken).ConfigureAwait(false);
@@ -181,6 +232,15 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
         return blobs.AsReadOnly();
     }
 
+    /// <summary>
+    /// Recursively lists files and directories from GitHub repository.
+    /// </summary>
+    /// <param name="currentPath">The current path being processed.</param>
+    /// <param name="options">The listing options including recursion and filtering.</param>
+    /// <param name="blobs">The collection to add found blobs to.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A task that represents the asynchronous operation.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when GitHub API returns an error.</exception>
     private async Task ListInternalAsync(string currentPath, ListOptions options, List<Blob> blobs, CancellationToken cancellationToken)
     {
         // Removed redundant null checks that are guaranteed by the caller
@@ -309,11 +369,11 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
     /// <param name="fullPath">The full path to the blob.</param>
     /// <param name="dataStream">The stream containing data to write.</param>
     /// <param name="append">If true, appends data to the existing blob; otherwise, overwrites the blob.</param>
-    /// <param name="token">The cancellation token.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A task that represents the asynchronous operation.</returns>
     /// <exception cref="ArgumentNullException">Thrown when fullPath or dataStream is null.</exception>
     /// <exception cref="InvalidOperationException">Thrown when writing to GitHub fails.</exception>
-    public async Task WriteAsync(string fullPath, Stream dataStream, bool append = false, CancellationToken token = default)
+    public async Task WriteAsync(string fullPath, Stream dataStream, bool append = false, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(fullPath))
             throw new ArgumentNullException(nameof(fullPath));
@@ -323,52 +383,81 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
         byte[] newFileBytes;
         using (var memoryStream = new MemoryStream())
         {
-            await dataStream.CopyToAsync(memoryStream, token);
+            await dataStream.CopyToAsync(memoryStream, cancellationToken);
             newFileBytes = memoryStream.ToArray();
         }
 
         var url = _urlBuilder.BuildFileUrl(fullPath);
-        var finalContentBytes = newFileBytes;
-        string? existingSha = null;
 
-        var existingFileResponse = await _apiClient.GetAsync(url, token);
-        if (existingFileResponse.IsSuccessStatusCode)
+        // Retry logic for SHA conflicts (max 3 attempts)
+        const int maxRetries = 3;
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
-            var existingFileJson = await existingFileResponse.Content.ReadAsStringAsync(token);
-            var existingFile = JsonSerializer.Deserialize<GitHubFileResponse>(existingFileJson);
-            existingSha = existingFile?.Sha;
+            var finalContentBytes = newFileBytes;
+            string? existingSha = null;
 
-            if (append && existingFile?.Content != null)
+            var existingFileResponse = await _apiClient.GetAsync(url, cancellationToken);
+            if (existingFileResponse.IsSuccessStatusCode)
             {
-                // Append new content to the existing file content
-                var existingContentBytes = Convert.FromBase64String(existingFile.Content.Replace("\n", string.Empty));
-                using var combinedStream = new MemoryStream();
-                combinedStream.Write(existingContentBytes, 0, existingContentBytes.Length);
-                combinedStream.Write(newFileBytes, 0, newFileBytes.Length);
-                finalContentBytes = combinedStream.ToArray();
+                var existingFileJson = await existingFileResponse.Content.ReadAsStringAsync(cancellationToken);
+                var existingFile = JsonSerializer.Deserialize<GitHubFileResponse>(existingFileJson);
+                existingSha = existingFile?.Sha;
+
+                if (append && existingFile?.Content != null)
+                {
+                    // Append new content to the existing file content
+                    var existingContentBytes = Convert.FromBase64String(existingFile.Content.Replace("\n", string.Empty, StringComparison.Ordinal));
+                    using var combinedStream = new MemoryStream();
+                    combinedStream.Write(existingContentBytes, 0, existingContentBytes.Length);
+                    combinedStream.Write(newFileBytes, 0, newFileBytes.Length);
+                    finalContentBytes = combinedStream.ToArray();
+                }
+                else
+                {
+                    // For overwrite, use new content
+                    finalContentBytes = newFileBytes;
+                }
             }
-        }
-        else if (append)
-        {
-            // If append and file does not exist, behave as create
-            finalContentBytes = newFileBytes;
-        }
+            else if (append)
+            {
+                // If append and file does not exist, behave as create
+                finalContentBytes = newFileBytes;
+                existingSha = null;
+            }
+            else
+            {
+                // For create/overwrite when file doesn't exist
+                finalContentBytes = newFileBytes;
+                existingSha = null;
+            }
 
-        var content = Convert.ToBase64String(finalContentBytes);
-        var requestBody = new
-        {
-            message = append ? "Append to existing file" : "Create or overwrite file",
-            content,
-            branch = _branch,
-            sha = existingSha // null if the file does not exist
-        };
+            var content = Convert.ToBase64String(finalContentBytes);
+            var requestBody = new
+            {
+                message = append ? "Append to existing file" : "Create or overwrite file",
+                content,
+                branch = _branch,
+                sha = existingSha // null if the file does not exist
+            };
 
-        var response = await _apiClient.PutAsync(url, requestBody, token);
+            var response = await _apiClient.PutAsync(url, requestBody, cancellationToken);
 
-        if (!response.IsSuccessStatusCode)
-        {
-            var error = await response.Content.ReadAsStringAsync(token);
-            throw new InvalidOperationException($"Error uploading file to GitHub: {response.StatusCode}, {error}");
+            if (response.IsSuccessStatusCode)
+            {
+                // Success - file written
+                return;
+            }
+
+            if (response.StatusCode == HttpStatusCode.Conflict && attempt < maxRetries)
+            {
+                // SHA conflict - retry with a small delay
+                await Task.Delay(100 * attempt, cancellationToken); // Progressive delay: 100ms, 200ms, 300ms
+                continue;
+            }
+
+            // Other error or max retries reached
+            var error = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException($"Error uploading file to GitHub after {attempt} attempts: {response.StatusCode}, {error}");
         }
     }
 
@@ -383,6 +472,10 @@ public class GitHubBlobStorage : IBlobStorage, IDisposable
         GC.SuppressFinalize(this);
     }
 
+    /// <summary>
+    /// Releases the unmanaged resources used by the <see cref="GitHubBlobStorage"/> and optionally releases the managed resources.
+    /// </summary>
+    /// <param name="disposing">true to release both managed and unmanaged resources; false to release only unmanaged resources.</param>
     protected virtual void Dispose(bool disposing)
     {
         if (_disposed) return;

@@ -1,0 +1,89 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "command": "dotnet",
+            "type": "shell",
+            "args": [
+                "build",
+                "${workspaceFolder}/FluentStorage.sln",
+                "/property:GenerateFullPaths=true",
+                "/consoleloggerparameters:NoSummary"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "silent"
+            },
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "test",
+            "command": "dotnet",
+            "type": "shell",
+            "args": [
+                "test",
+                "${workspaceFolder}/test/FluentStorage.Github.Tests/FluentStorage.Github.Tests.csproj",
+                "--logger",
+                "console;verbosity=normal"
+            ],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "dependsOn": "build",
+            "presentation": {
+                "reveal": "always",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "test-specific",
+            "command": "dotnet",
+            "type": "shell",
+            "args": [
+                "test",
+                "${workspaceFolder}/test/FluentStorage.Github.Tests/FluentStorage.Github.Tests.csproj",
+                "--filter",
+                "${input:testFilter}",
+                "--logger",
+                "console;verbosity=detailed"
+            ],
+            "group": "test",
+            "dependsOn": "build",
+            "presentation": {
+                "reveal": "always",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "test-no-debug",
+            "command": "dotnet",
+            "type": "shell",
+            "args": [
+                "test",
+                "${workspaceFolder}/test/FluentStorage.Github.Tests/FluentStorage.Github.Tests.csproj",
+                "--logger",
+                "console;verbosity=normal",
+                "--no-build"
+            ],
+            "group": "test",
+            "dependsOn": "build",
+            "presentation": {
+                "reveal": "always",
+                "clear": true
+            },
+            "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "testFilter",
+            "description": "Test filter (e.g. method name)",
+            "default": "WriteAsync",
+            "type": "promptString"
+        }
+    ]
+}
