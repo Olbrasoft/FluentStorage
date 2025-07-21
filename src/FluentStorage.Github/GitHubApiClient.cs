@@ -4,19 +4,27 @@ using System.Text.Json;
 
 namespace Olbrasoft.FluentStorage.Github
 {
-    public class GitHubApiClient : IDisposable
+    public class GitHubApiClient : IGitHubApiClient
     {
         private readonly HttpClient _httpClient;
         private bool _disposed;
 
         public GitHubApiClient(string token)
-            : this(token, new HttpClient())
         {
+            ArgumentNullException.ThrowIfNull(token);
+            if (string.IsNullOrWhiteSpace(token)) throw new ArgumentException("Token cannot be empty or whitespace.", nameof(token));
+
+            _httpClient = new HttpClient();
+
+            // Set headers
+            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("token", token);
+            _httpClient.DefaultRequestHeaders.UserAgent.Add(ProductInfoHeaderValue.Parse("GitHubBlobStorage"));
         }
 
         public GitHubApiClient(string token, HttpClient client)
         {
-            if (string.IsNullOrEmpty(token)) throw new ArgumentNullException(nameof(token));
+            ArgumentNullException.ThrowIfNull(token);
+            if (string.IsNullOrWhiteSpace(token)) throw new ArgumentException("Token cannot be empty or whitespace.", nameof(token));
             _httpClient = client ?? throw new ArgumentNullException(nameof(client));
 
             // Set headers only if not already set (for testability)

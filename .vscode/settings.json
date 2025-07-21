@@ -1,3 +1,11 @@
 {
-    "CodeGPT.apiKey": "Ollama"
+    "CodeGPT.apiKey": "Ollama",
+    "dotnet.defaultSolution": "FluentStorage.sln",
+    "dotnet.completion.showCompletionItemsFromUnimportedNamespaces": true,
+    "dotnet.unitTests.runSettingsPath": "",
+    "testExplorer.useNativeTesting": true,
+    "dotnet.unitTests.enableCodeLens": true,
+    "csharp.semanticHighlighting.enabled": true,
+    "omnisharp.enableRoslynAnalyzers": true,
+    "omnisharp.useModernNet": true
 }
